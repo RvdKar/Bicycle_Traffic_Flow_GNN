@@ -63,7 +63,12 @@ class Config:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     use_exog: bool = True
-
+    lambda_lap: float = 0.0      # weight for Laplacian smoothness (0 disables)
+    gcn_type: str = "gcn"        # "gcn" or "cheb"
+    cheb_K: int = 3              # order for ChebGCN
+    nblocks: int = 2             # number of ST blocks (use 3 for dilations 1-2-4)
+    hidden: int = 32
+    dropout: float = 0.1
 
 def normalize_adjacency(A: np.ndarray) -> np.ndarray:
     """ Ā = D^{-1/2} A D^{-1/2} """
