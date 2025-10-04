@@ -53,22 +53,23 @@ def build_line_graph_adjacency(directed_edges: List[Tuple[str,str]], allow_uturn
 
 @dataclass
 class Config:
-    time_granularity: str = "5min"  # resample bin
-    H_in: int = 12                  # 12*5min = 1 hour history
-    H_out: int = 12                 # forecast next hour
+    time_granularity: str = "15min"
+    H_in: int = 12
+    H_out: int = 12
     batch_size: int = 64
-    lr: float = 1e-3
-    max_epochs: int = 100
-    patience: int = 15
+    lr: float = 1e-4
+    max_epochs: int = 20
+    patience: int = 8
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
     seed: int = 42
     use_exog: bool = True
-    lambda_lap: float = 0.0      # weight for Laplacian smoothness (0 disables)
-    gcn_type: str = "gcn"        # "gcn" or "cheb"
-    cheb_K: int = 3              # order for ChebGCN
-    nblocks: int = 2             # number of ST blocks (use 3 for dilations 1-2-4)
+    gcn_type: str = "cheb"   # or "gcn"
+    cheb_K: int = 3
+    nblocks: int = 2
     hidden: int = 32
-    dropout: float = 0.1
+    dropout: float = 0.12
+    lambda_lap: float = 1e-3
+
 
 def normalize_adjacency(A: np.ndarray) -> np.ndarray:
     """ Ā = D^{-1/2} A D^{-1/2} """
