@@ -22,6 +22,37 @@ class GCNLayer(nn.Module):
         Xprop = torch.einsum('ij,btjf->btif', A, Xw)     # [B,T,E,F_out]
         return self.do(self.act(Xprop))
 
+# class ChebGCN(nn.Module):
+#     """
+#     Chebyshev-style K-hop graph convolution on the line-graph of edges.
+#     Uses pre-normalized adjacency (A_hat) and builds multi-hop responses.
+#     """
+#     def __init__(self, F_in, F_out, A_hat: torch.Tensor, K=3, dropout=0.1):
+#         super().__init__()
+#         self.register_buffer('A_hat', A_hat.to(dtype=torch.float32))  # [E,E]
+#         self.W = nn.Parameter(torch.randn(K, F_in, F_out) * 0.01)
+#         self.act = nn.ReLU()
+#         self.do  = nn.Dropout(dropout)
+#         self.K = K
+
+#     def forward(self, X):  # X: [B,T,E,F_in]
+#         A = self.A_hat.to(X.device, non_blocking=True)  # [E,E]
+#         B,T,E,F_in = X.shape
+#         outs = []
+
+#         # k = 0  (identity / 0-hop)
+#         Z = X  # [B,T,E,F_in]
+#         outs.append(torch.einsum('btif,kfo->btio', Z, self.W[0:1])[...,0,:])  # apply W0
+
+#         # iterative k-hop aggregations: Z <- A @ Z
+#         cur = Z
+#         for k in range(1, self.K):
+#             cur = torch.einsum('ij,btjf->btif', A, cur)                    # A @ cur
+#             outs.append(torch.einsum('btif,kfo->btio', cur, self.W[k:k+1])[...,0,:])
+
+#         Y = torch.stack(outs, dim=0).sum(0)  # sum_k (A^k X) W_k   -> [B,T,E,F_out]
+#         return self.do(self.act(Y))
+
 class ChebGCN(nn.Module):
     """
     Chebyshev-style K-hop graph convolution on the line-graph of edges.
@@ -40,17 +71,17 @@ class ChebGCN(nn.Module):
         B,T,E,F_in = X.shape
         outs = []
 
-        # k = 0  (identity / 0-hop)
-        Z = X  # [B,T,E,F_in]
-        outs.append(torch.einsum('btif,kfo->btio', Z, self.W[0:1])[...,0,:])  # apply W0
+        # k = 0 hop (identity)
+        Z = X                                   # [B,T,E,F_in]
+        outs.append(torch.einsum('btif,kfo->btio', Z, self.W[0:1]))  # [B,T,E,F_out]
 
-        # iterative k-hop aggregations: Z <- A @ Z
+        # k = 1..K-1: iterative A @ Z
         cur = Z
         for k in range(1, self.K):
-            cur = torch.einsum('ij,btjf->btif', A, cur)                    # A @ cur
-            outs.append(torch.einsum('btif,kfo->btio', cur, self.W[k:k+1])[...,0,:])
+            cur = torch.einsum('ij,btjf->btif', A, cur)              # [B,T,E,F_in]
+            outs.append(torch.einsum('btif,kfo->btio', cur, self.W[k:k+1]))
 
-        Y = torch.stack(outs, dim=0).sum(0)  # sum_k (A^k X) W_k   -> [B,T,E,F_out]
+        Y = torch.stack(outs, dim=0).sum(0)                          # [B,T,E,F_out]
         return self.do(self.act(Y))
 
 
@@ -129,49 +160,3 @@ class EdgeSTGNN(nn.Module):
         return out
 
     
-
-# # to do!!!
-
-# # ChebGCN(F_hidden, F_hidden, A_hat, K=3)
-# class ChebGCN(nn.Module):
-#     def __init__(self, F_in, F_out, A_hat: torch.Tensor, K=3, dropout=0.1):
-#         super().__init__()
-#         self.register_buffer('A', A_hat)           # [E,E], row-normalized with self-loops
-#         self.W = nn.Parameter(torch.randn(K, F_in, F_out) * 0.01)
-#         self.do = nn.Dropout(dropout)
-#         self.act = nn.ReLU()
-#         self.K = K
-
-#     def forward(self, X):  # X: [B,T,E,F_in]
-#         B,T,E,F = X.shape
-#         A = self.A                                           # [E,E]
-#         Xw = torch.einsum('bt ef, k f o -> bt k e o', X, self.W)  # [B,T,K,E,F_out]
-#         # compute powers A^k @ X for k=0..K-1 (k=0 is identity)
-#         outs = []
-#         cur = Xw[:, :, 0]                                    # k=0
-#         outs.append(cur)
-#         for k in range(1, self.K):
-#             cur = torch.einsum('ij,btjf->btif', A, Xw[:, :, k])
-#             outs.append(cur)
-#         Y = sum(outs)                                        # [B,T,E,F_out]
-#         return self.do(self.act(Y))
-
-# # include Neighbor lag features (lags 1–3)!!!!!!!!!!
-
-# # extra loss term
-# def laplacian_smoothness(yhat, A_bin):  # yhat: [B,H,E]
-#     # sum over neighbors (i,j) of (y_i - y_j)^2; normalize by number of pairs
-#     diff = yhat[..., None, :] - yhat[..., :, None]         # [B,H,E,E]
-#     mask = torch.from_numpy(A_bin).to(yhat.device).bool()
-#     sq = (diff**2)[..., mask]                               # select neighbors
-#     return sq.mean()
-
-
-
-# blocks = nn.ModuleList([
-#     STBlock(F_in, 64, A_hat, dropout=0.12, dilation=1),
-#     STBlock(64,   64, A_hat, dropout=0.12, dilation=2),
-#     STBlock(64,   64, A_hat, dropout=0.12, dilation=4),
-# ])
-
-

@@ -24,11 +24,60 @@ def spike_aware_loss(pred, target, mask, tau, alpha=1.5, beta=0.3):
     return loss_base + beta * loss_slope
 
 
-def masked_mae(pred, target, mask, eps=1e-8):
-    # pred/target: [B,H,E]; mask: [B,H,E]
+# def masked_mae(pred, target, mask, eps=1e-8):
+#     # pred/target: [B,H,E]; mask: [B,H,E]
+#     diff = (pred - target).abs()
+#     num = (diff * mask).sum()
+#     den = mask.sum() + eps
+#     return num / den
+
+def masked_mae(
+    pred: torch.Tensor,          # [B,H,E]
+    target: torch.Tensor,        # [B,H,E]
+    mask: torch.Tensor,          # [B,H,E]
+    eps: float = 1e-8,
+    *,
+    activity_gamma: float = 0.0, # 0 -> plain MAE (backward compatible)
+    activity_mode: str = "binary",  # "binary" or "value"
+    activity_q: float | None = None, # scale for "value" mode (e.g., train 95th pct)
+    activity_wmax: float = 3.0       # max extra weight in "value" mode
+):
+    """
+    MAE with optional activity weighting.
+    - binary:  w = 1 + gamma * 1[target > 0]
+    - value:   w = 1 + gamma * clamp((target / q), max=wmax)   (and w=1 when target<=0)
+
+    Keep evaluation with activity_gamma=0 to report plain MAE.
+    """
+    pred   = pred.to(dtype=torch.float32)
+    target = target.to(dtype=torch.float32)
+    m      = mask.to(dtype=torch.float32)
+
+    # weights
+    if activity_gamma > 0.0:
+        if activity_mode == "binary":
+            w = 1.0 + activity_gamma * (target > 0).float()
+        elif activity_mode == "value":
+            # choose q: prefer a precomputed scalar from the train split
+            if activity_q is None:
+                obs = target[m > 0]
+                if obs.numel() == 0:
+                    q = torch.tensor(1.0, device=pred.device)
+                else:
+                    q = torch.quantile(obs, 0.95)
+            else:
+                q = torch.as_tensor(activity_q, dtype=torch.float32, device=pred.device)
+            w_raw = (target / (q + 1e-12)).clamp(min=0.0, max=activity_wmax)
+            w = 1.0 + activity_gamma * w_raw
+            w = torch.where(target > 0, w, torch.ones_like(w))
+        else:
+            raise ValueError("activity_mode must be 'binary' or 'value'")
+    else:
+        w = torch.ones_like(pred)
+
     diff = (pred - target).abs()
-    num = (diff * mask).sum()
-    den = mask.sum() + eps
+    num = (diff * m * w).sum()
+    den = (m * w).sum().clamp_min(eps)
     return num / den
 
 
@@ -70,7 +119,7 @@ def train_model(model, loaders, config: Config, epoch_hook=None, A_bin: np.ndarr
             yhat = model(x)
             if not torch.isfinite(yhat).all():
                 raise RuntimeError("model output contains NaN/Inf")
-            loss = masked_mae(yhat, y, m)
+            loss = masked_mae(yhat, y, m, activity_gamma=4.0, activity_mode="binary")
             if not torch.isfinite(loss):
                 print("Non-finite loss. Stats:",
                     f"y min/max = {float(y.min()):.3f}/{float(y.max()):.3f},",

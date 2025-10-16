@@ -73,7 +73,7 @@ def add_exogenous_basic(
 
     # weather aligned to timeline (optional)
     if weather_df is not None:
-        W = weather_df.reindex(times).fillna(method="ffill").fillna(method="bfill")
+        W = weather_df.reindex(times).ffill().bfill()
         feats.append(W.to_numpy(dtype=np.float32, copy=False))
 
     exog_t = np.concatenate(feats, axis=1)           # [T, F_basic]
