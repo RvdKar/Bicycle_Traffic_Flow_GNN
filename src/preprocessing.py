@@ -4,6 +4,7 @@ from typing import List, Dict, Tuple, Set, Any, Optional, Iterable
 import numpy as np
 import pandas as pd
 import torch
+from zoneinfo import ZoneInfo
 from torch.utils.data import Dataset
 import xarray as xr
 from . import features, training
@@ -455,45 +456,172 @@ def to_ams_naive(ts: pd.Series) -> pd.Series:
         return ts.dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam").dt.tz_localize(None)
     return ts.dt.tz_convert("Europe/Amsterdam").dt.tz_localize(None)
 
-def load_davis_weather(nc_paths: List[str], time_granularity: str = "15min") -> pd.DataFrame:
-    """
-    Load Davis NetCDF files, convert time to Europe/Amsterdam (naive),
-    keep numeric columns, resample to `time_granularity`.
-    """
-    frames = []
-    for p in nc_paths:
-        ds = xr.open_dataset(p)
-        t = pd.to_datetime(ds["time"].values)
-        t = (pd.DatetimeIndex(t)
-                .tz_localize("UTC")
-                .tz_convert("Europe/Amsterdam")
-                .tz_localize(None))
-        df = ds.to_dataframe().reset_index()
-        df["time"] = t
-        df = df.set_index("time").sort_index()
-        num = df.select_dtypes(include="number")
-        if not num.empty:
-            frames.append(num)
-    if not frames:
-        return pd.DataFrame(index=pd.DatetimeIndex([]))
-    W = pd.concat(frames).sort_index()
-    Wg = W.resample(time_granularity).mean()
-    # Optional normalisation of common names; harmless if absent
-    Wg = Wg.rename(columns={
-        "temp_out": "temp_C", "temp": "temp_C", "Temperature": "temp_C",
-        "rain": "rain_mm", "precip": "rain_mm", "rain_rate": "rain_mm_h",
-        "wind_speed": "wind_mps", "wind": "wind_mps", "wind_avg": "wind_mps",
-    })
-    return Wg
+# def load_davis_weather(nc_paths: List[str], time_granularity: str = "15min") -> pd.DataFrame:
+#     """
+#     Load Davis NetCDF files, convert time to Europe/Amsterdam (naive),
+#     keep numeric columns, resample to `time_granularity`.
+#     """
+#     frames = []
+#     for p in nc_paths:
+#         ds = xr.open_dataset(p)
+#         t = pd.to_datetime(ds["time"].values)
+#         t = (pd.DatetimeIndex(t)
+#                 .tz_localize("UTC")
+#                 .tz_convert("Europe/Amsterdam")
+#                 .tz_localize(None))
+#         df = ds.to_dataframe().reset_index()
+#         df["time"] = t
+#         df = df.set_index("time").sort_index()
+#         num = df.select_dtypes(include="number")
+#         if not num.empty:
+#             frames.append(num)
+#     if not frames:
+#         return pd.DataFrame(index=pd.DatetimeIndex([]))
+#     W = pd.concat(frames).sort_index()
+#     Wg = W.resample(time_granularity).mean()
+#     # Optional normalisation of common names; harmless if absent
+#     Wg = Wg.rename(columns={
+#         "temp_out": "temp_C", "temp": "temp_C", "Temperature": "temp_C",
+#         "rain": "rain_mm", "precip": "rain_mm", "rain_rate": "rain_mm_h",
+#         "wind_speed": "wind_mps", "wind": "wind_mps", "wind_avg": "wind_mps",
+#     })
+#     return Wg
 
-def align_weather_to_times(weather_df: Optional[pd.DataFrame],
-                           times: pd.DatetimeIndex) -> Optional[pd.DataFrame]:
+def _pick_var(ds, candidates):
+    names = {n.lower(): n for n in ds.data_vars}
+    for cand in candidates:
+        for lname, real in names.items():
+            if cand in lname:
+                return real
+    return None
+
+def load_davis_weather(nc_paths: List[str], time_granularity: str = "5min") -> pd.DataFrame:
     """
-    Reindex weather to camera timeline and fill small gaps.
+    Read one or more Davis NetCDF files and return a tz-NAIVE Europe/Amsterdam dataframe,
+    resampled to `time_granularity`, with THESE canonical columns (float32):
+
+        temperature, wind_mps, wind_gust_speed, rain_mm, rain_mm_h
+
+    - temperature, wind_mps:     interval means
+    - wind_gust_speed:           interval max
+    - rain_mm:                   mm per interval (from cumulative if available; else from rate)
+    - rain_mm_h:                 mean rain rate in mm/h over the interval
+
+    This preserves the robust variable-picking from your old loader and aligns to your
+    new feature names & index conventions used elsewhere in the notebook.
+    """
+    AMS = ZoneInfo("Europe/Amsterdam")
+    dfs = []
+
+    for p in nc_paths:
+        ds = xr.open_dataset(p)  # single-file; no dask needed
+
+        # Pick available variables in THIS file
+        var_temp      = _pick_var(ds, ['air_temp','airtemperature','temperature','temp_out','temp'])
+        var_wind      = _pick_var(ds, ['wind_speed','windavg','wind','windspeed'])
+        var_gust      = _pick_var(ds, ['wind_gust','windgust','gust'])
+        var_rain_cum  = _pick_var(ds, ['rain_cum','rain_total','precip_accum','precipitation_accum'])
+        var_rain_rate = _pick_var(ds, ['rain_rate','precip_rate','precipitation_rate'])
+
+        keep = [v for v in [var_temp, var_wind, var_gust, var_rain_cum, var_rain_rate] if v]
+        if not keep:
+            continue
+
+        df = ds[keep].to_dataframe().reset_index()
+
+        # Normalize/convert time to AMS then make it NAIVE (matches the rest of your pipeline)
+        time_col = 'time' if 'time' in df.columns else next(
+            (c for c in df.columns if c.lower() in ('datetime','date','timestamp')), None
+        )
+        if time_col is None:
+            raise RuntimeError(f"No time coordinate found in {p}")
+        t = pd.to_datetime(df[time_col])
+        if t.dt.tz is None:
+            t = t.dt.tz_localize('UTC').dt.tz_convert(AMS)
+        else:
+            t = t.dt.tz_convert(AMS)
+        t = t.dt.tz_localize(None)  # tz-naive AMS
+
+        df = df.set_index(t).sort_index()
+        df.index.name = "time"
+
+        # Resample with appropriate aggregations
+        agg = {}
+        if var_temp:      agg[var_temp]      = 'mean'
+        if var_wind:      agg[var_wind]      = 'mean'
+        if var_gust:      agg[var_gust]      = 'max'
+        if var_rain_rate: agg[var_rain_rate] = 'mean'
+        if var_rain_cum:  agg[var_rain_cum]  = 'last'
+        rs = df.resample(time_granularity).agg(agg)
+
+        # Map to canonical names used in the NEW notebook
+        out = pd.DataFrame(index=rs.index)
+        if var_temp:      out['temperature']      = rs[var_temp]
+        if var_wind:      out['wind_mps']         = rs[var_wind]
+        if var_gust:      out['wind_gust_speed']  = rs[var_gust]
+        if var_rain_rate: out['rain_mm_h']        = rs[var_rain_rate]
+        if var_rain_cum:  out['rain_cum']         = rs[var_rain_cum]  # temp for diff
+
+        dfs.append(out)
+
+    if not dfs:
+        # return empty with expected columns so downstream code is safe
+        idx = pd.DatetimeIndex([], name="time")
+        return pd.DataFrame(index=idx, columns=[
+            "temperature","wind_mps","wind_gust_speed","rain_mm","rain_mm_h"
+        ]).astype('float32')
+
+    # Concatenate months and sort
+    W = pd.concat(dfs, axis=0).sort_index()
+
+    # Derive rain per interval (prefer cumulative if present)
+    if 'rain_cum' in W.columns:
+        W['rain_mm'] = W['rain_cum'].diff().clip(lower=0)
+    elif 'rain_mm_h' in W.columns:
+        minutes = pd.to_timedelta(time_granularity).components.minutes or 1
+        W['rain_mm'] = W['rain_mm_h'] * (minutes / 60.0)
+    else:
+        W['rain_mm'] = np.nan
+
+    # Ensure all expected columns exist
+    for col in ["temperature","wind_mps","wind_gust_speed","rain_mm_h"]:
+        if col not in W.columns:
+            W[col] = np.nan
+
+    # Final selection & dtype; drop helper
+    cols = ["temperature","wind_mps","wind_gust_speed","rain_mm","rain_mm_h"]
+    W = W[cols].astype('float32')
+    if 'rain_cum' in W.columns:
+        W = W.drop(columns=['rain_cum'], errors='ignore')
+    return W
+
+
+def align_weather_to_times(weather_df: pd.DataFrame, times: pd.DatetimeIndex) -> pd.DataFrame | None:
+    """
+    Align weather to model timeline:
+    - ensure DatetimeIndex, sorted, unique
+    - reindex to times
+    - forward/backward fill
     """
     if weather_df is None or weather_df.empty:
         return None
-    return weather_df.reindex(times).ffill().bfill()
+
+    w = weather_df.copy()
+    # ensure datetime index and sorted
+    if not isinstance(w.index, pd.DatetimeIndex):
+        w.index = pd.to_datetime(w.index)
+    w = w.sort_index()
+
+    # collapse duplicates at identical timestamps (take last; or use mean())
+    if w.index.has_duplicates:
+        # w = w.groupby(level=0).mean()            # average if you prefer
+        w = w[~w.index.duplicated(keep="last")]     # take last observation
+
+    # reindex to target timeline and fill small gaps
+    target = pd.DatetimeIndex(times)
+    w = w.reindex(target)
+    w = w.ffill().bfill()
+    return w
 
 
 def build_data_and_loaders(
