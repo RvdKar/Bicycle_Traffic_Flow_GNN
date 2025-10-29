@@ -256,80 +256,13 @@ def _alloc_lrm(n: int, ratios: Tuple[float,float,float]) -> Tuple[int,int,int]:
             base[i] += 1
     return tuple(int(x) for x in base)
 
-# def stratified_time_split_balanced(
-#     times: pd.DatetimeIndex,
-#     *,
-#     train_ratio=0.70,
-#     val_ratio=0.15,
-#     test_ratio=0.15,
-#     random_state: int = 42,
-#     holiday_ranges=None,
-#     exam_ranges=None,
-# ) -> Dict[str, np.ndarray]:
-#     """
-#     Balance by COMPOSITE daily flags (is_weekend, is_holiday, is_exam).
-#     For each unique daily signature (up to 8 combos), allocate days to splits
-#     with the largest-remainder method, then build boolean masks on the full timeline.
-#     """
-#     rng = np.random.RandomState(random_state)
-#     times = pd.DatetimeIndex(times)
-#     day_of = times.normalize()
-
-#     # daily flags (independent, no precedence)
-#     flags = calendar_flags(times, holiday_ranges=holiday_ranges, exam_ranges=exam_ranges)
-#     daily = flags.groupby(day_of).max()  # one row per day
-
-#     # encode signature per day as 3-bit code: weekend<<0 | holiday<<1 | exam<<2
-#     sig = (daily["is_weekend"].astype(int)
-#            + 2 * daily["is_holiday"].astype(int)
-#            + 4 * daily["is_exam"].astype(int))
-
-#     # collect days by signature
-#     days_by_sig: Dict[int, pd.DatetimeIndex] = {}
-#     for code in np.sort(sig.unique()):
-#         days_by_sig[int(code)] = sig.index[sig == code]
-
-#     ratios = (train_ratio, val_ratio, test_ratio)
-#     sel = {"train": set(), "val": set(), "test": set()}
-
-#     def _alloc_lrm(n: int, ratios: Tuple[float, float, float]) -> Tuple[int, int, int]:
-#         raw = np.array(ratios, dtype=float) * n
-#         base = np.floor(raw).astype(int)
-#         give = int(n - base.sum())
-#         if give > 0:
-#             rem = raw - base
-#             for i in np.argsort(-rem)[:give]:
-#                 base[i] += 1
-#         return int(base[0]), int(base[1]), int(base[2])
-
-#     for code, days in days_by_sig.items():
-#         n = len(days)
-#         if n == 0:
-#             continue
-#         perm = days[rng.permutation(n)]
-#         n_train, n_val, n_test = _alloc_lrm(n, ratios)
-#         sel["train"].update(perm[:n_train])
-#         sel["val"].update(perm[n_train:n_train + n_val])
-#         sel["test"].update(perm[n_train + n_val:n_train + n_val + n_test])
-
-#     def mask_for(split: str) -> np.ndarray:
-#         if not sel[split]:
-#             return np.zeros(len(times), dtype=bool)
-#         sel_idx = pd.DatetimeIndex(list(sel[split]))
-#         return np.isin(day_of.values, sel_idx.values)  # ndarray[bool]
-
-#     return {
-#         "train": mask_for("train"),
-#         "val":   mask_for("val"),
-#         "test":  mask_for("test"),
-#     }
 
 def stratified_time_split_balanced(
     times: pd.DatetimeIndex,
     *,
     ratios: Tuple[float,float,float] = (0.70, 0.15, 0.15),
     seed: int = 42,
-    flags_df: Optional[pd.DataFrame] = None,   # optional: provide precomputed flags with columns ["is_weekend","is_holiday","is_exam"]
+    flags_df: Optional[pd.DataFrame] = None,
     holiday_ranges: Optional[List[Tuple[str,str]]] = None,
     exam_ranges: Optional[List[Tuple[str,str]]] = None,
 ) -> Dict[str, np.ndarray]:
@@ -456,36 +389,6 @@ def to_ams_naive(ts: pd.Series) -> pd.Series:
         return ts.dt.tz_localize("UTC").dt.tz_convert("Europe/Amsterdam").dt.tz_localize(None)
     return ts.dt.tz_convert("Europe/Amsterdam").dt.tz_localize(None)
 
-# def load_davis_weather(nc_paths: List[str], time_granularity: str = "15min") -> pd.DataFrame:
-#     """
-#     Load Davis NetCDF files, convert time to Europe/Amsterdam (naive),
-#     keep numeric columns, resample to `time_granularity`.
-#     """
-#     frames = []
-#     for p in nc_paths:
-#         ds = xr.open_dataset(p)
-#         t = pd.to_datetime(ds["time"].values)
-#         t = (pd.DatetimeIndex(t)
-#                 .tz_localize("UTC")
-#                 .tz_convert("Europe/Amsterdam")
-#                 .tz_localize(None))
-#         df = ds.to_dataframe().reset_index()
-#         df["time"] = t
-#         df = df.set_index("time").sort_index()
-#         num = df.select_dtypes(include="number")
-#         if not num.empty:
-#             frames.append(num)
-#     if not frames:
-#         return pd.DataFrame(index=pd.DatetimeIndex([]))
-#     W = pd.concat(frames).sort_index()
-#     Wg = W.resample(time_granularity).mean()
-#     # Optional normalisation of common names; harmless if absent
-#     Wg = Wg.rename(columns={
-#         "temp_out": "temp_C", "temp": "temp_C", "Temperature": "temp_C",
-#         "rain": "rain_mm", "precip": "rain_mm", "rain_rate": "rain_mm_h",
-#         "wind_speed": "wind_mps", "wind": "wind_mps", "wind_avg": "wind_mps",
-#     })
-#     return Wg
 
 def _pick_var(ds, candidates):
     names = {n.lower(): n for n in ds.data_vars}
