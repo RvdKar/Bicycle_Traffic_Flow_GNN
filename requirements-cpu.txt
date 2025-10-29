@@ -1,0 +1,63 @@
+# ---------- installer behaviour ----------
+--upgrade-strategy eager
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# ---------- build tools ----------
+pip>=24.0
+setuptools>=68.0
+wheel>=0.41
+
+# ---------- core scientific stack ----------
+# (looser pins to avoid conflicts across torch/pandas/xarray)
+numpy>=2.0,<3.0
+pandas>=2.2,<3.0
+xarray>=2024.6
+netCDF4>=1.6.5
+cftime>=1.6.4
+
+# ---------- PyTorch (CPU) ----------
+torch==2.4.1+cpu
+torchvision==0.19.1+cpu
+torchaudio==2.4.1+cpu
+
+# ---------- plotting / notebooks ----------
+matplotlib>=3.8,<3.12
+contourpy>=1.2
+pillow>=10.3
+kiwisolver>=1.4
+cycler>=0.12
+fonttools>=4.44
+ipykernel>=6.29
+jupyter_client>=8.6
+jupyter_core>=5.7
+ipywidgets>=8.1
+tornado>=6.3
+pyzmq>=25.1
+traitlets>=5.14
+nest-asyncio>=1.6
+
+# ---------- utilities ----------
+tqdm>=4.66
+requests>=2.31
+packaging>=23.2
+python-dateutil>=2.9
+pytz>=2024.1
+typing_extensions>=4.11
+platformdirs>=4.2
+colorama>=0.4.6
+psutil>=5.9
+
+# ---------- ML / graphs ----------
+scikit-learn>=1.4
+networkx>=3.2
+
+# ---------- geospatial stack ----------
+geopandas==1.1.1
+shapely==2.1.2
+pyproj==3.7.2
+rasterio==1.4.3
+pyogrio==0.11.1
+contextily==1.6.2
+mercantile==1.2.1
+xyzservices==2025.4.0
+geopy==2.4.1
